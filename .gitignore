@@ -1,0 +1,5 @@
+*.pyc
+dask-worker-space
+.vscode
+__pycache__
+env
