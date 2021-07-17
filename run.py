@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, List
+from typing import Any, Awaitable, Callable, List, Optional
 import asyncio
 import itertools
 import csv
@@ -46,7 +46,9 @@ WORKLOADS: dict[str, Callable[[distributed.Client], Awaitable[tuple[int, float]]
 }
 
 
-async def make_cluster_coiled(batched_send_interval: str) -> distributed.Cluster:
+async def make_cluster_coiled(
+    batched_send_interval: str, compression: str
+) -> distributed.deploy.Cluster:
     return await coiled.Cluster(
         asynchronous=True,
         n_workers=1,
@@ -60,12 +62,19 @@ async def make_cluster_coiled(batched_send_interval: str) -> distributed.Cluster
         environ={
             "MALLOC_TRIM_THRESHOLD_": "0",
             "DASK_DISTRIBUTED__WORKER__BATCHED_SEND_INTERVAL": batched_send_interval,
+            # NOTE: client <--> scheduler comms are uncompressed (probably) because we can't set
+            # the local dask config in an async-safe way, so I believe
+            # https://github.com/dask/distributed/blob/e0593fa/distributed/comm/core.py#L150-L153
+            # means we will at least _send_ data uncompressed.
+            "DASK_DISTRIBUTED__COMM__COMPRESSION": compression,
         },
     )
 
 
-async def make_cluster_local(batched_send_interval: str) -> distributed.Cluster:
-    # TODO set `batched_send_interval` locally.
+async def make_cluster_local(
+    batched_send_interval: str, compression: str
+) -> distributed.deploy.Cluster:
+    # TODO set `batched_send_interval` and `compression` locally.
     # This is just for testing things don't explode.
     return await distributed.LocalCluster(
         n_workers=1,
@@ -79,30 +88,35 @@ async def trial(
     cluster_size: int,
     batched_send_interval: str,
     workload: str,
+    compression: str,
     repetition: int,
 ) -> tuple[int, float]:
-    client: distributed.Client = None
-    cluster: distributed.Cluster = None
+    client: Optional[distributed.Client] = None
+    cluster: Optional[distributed.deploy.Cluster] = None
     workload_func = WORKLOADS[workload]
     try:
         print(
-            f"[italic]Starting cluster for {cluster_size=} {batched_send_interval=} {workload=} {repetition=}"
+            f"[italic]Starting cluster for "
+            f"{cluster_size=} {batched_send_interval=} {workload=} {compression=} {repetition=}"
         )
-        cluster = await make_cluster_coiled(batched_send_interval)
+        cluster = await make_cluster_local(batched_send_interval, compression)
         client = await distributed.Client(
             cluster, asynchronous=True, set_as_default=False
         )
         try:
             print(
-                f"[italic]Scaling for {cluster_size=} {batched_send_interval=} {workload=} {repetition=}"
+                f"[italic]Scaling for "
+                f"{cluster_size=} {batched_send_interval=} {workload=} {compression=} {repetition=}"
             )
             await cluster.scale(cluster_size)
-            await client.wait_for_workers(cluster_size)
-            print(
-                f"[italic][underline]Here we go[/] - {cluster_size=} {batched_send_interval=} {workload=} {repetition=}"
-            )
         except asyncio.TimeoutError:
             pass
+
+        await client.wait_for_workers(cluster_size)
+        print(
+            f"[italic][underline]Here we go[/] - "
+            f"{cluster_size=} {batched_send_interval=} {workload=} {compression=} {repetition=}"
+        )
 
         return await workload_func(client)
 
@@ -190,6 +204,14 @@ if __name__ == "__main__":
             "500ms",
         ],
         workload=["shuffle"],
+        compression=[
+            "None",
+            # "zlib",
+            # "snappy",
+            # "lz4",
+            # "zstandard",
+            # "blosc",
+        ],
     )
 
     asyncio.run(
