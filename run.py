@@ -21,23 +21,22 @@ from util import gather_with_concurrency, graph_size
 async def shuffle(client: distributed.Client) -> tuple[int, float]:
     n_workers = len(await client.nthreads())
 
-    # target: 45 partitions per worker
+    # target: 100 partitions per worker
     start = pd.to_datetime("2000-01-01")
     partition_freq = pd.to_timedelta("1h")
-    end = start + partition_freq * (n_workers * 45)
+    end = start + partition_freq * (n_workers * 100)
 
     df = dask.datasets.timeseries(
         start=start,
         end=end,
         partition_freq=partition_freq,
-        freq="60s",
+        freq="1800s",
     )
     shuffled = df.shuffle("id", shuffle="tasks")
 
     start = time.perf_counter()
-    await distributed.client._wait(
-        shuffled.persist()
-    )  # TODO distributed.wait doesn't work with multiple clients
+    # TODO distributed.wait doesn't work with multiple clients
+    await distributed.client._wait(shuffled.persist())
     elapsed = time.perf_counter() - start
     return graph_size(shuffled), elapsed
 
