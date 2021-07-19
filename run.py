@@ -36,7 +36,7 @@ async def shuffle(client: distributed.Client) -> tuple[int, float]:
 
     start = time.perf_counter()
     # TODO distributed.wait doesn't work with multiple clients
-    await distributed.client._wait(shuffled.persist())
+    await distributed.client._wait(client.persist(shuffled))
     elapsed = time.perf_counter() - start
     return graph_size(shuffled), elapsed
 
