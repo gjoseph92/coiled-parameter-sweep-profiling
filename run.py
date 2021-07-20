@@ -90,7 +90,7 @@ async def trial(
     workload: str,
     compression: str,
     repetition: int,
-) -> tuple[int, float]:
+) -> tuple[int, float, dict[str, list[tuple[int, int]]]]:
     client: Optional[distributed.Client] = None
     cluster: Optional[distributed.deploy.Cluster] = None
     workload_func = WORKLOADS[workload]
@@ -103,6 +103,7 @@ async def trial(
         client = await distributed.Client(
             cluster, asynchronous=True, set_as_default=False
         )
+        assert client is not None
         try:
             print(
                 f"[italic]Scaling for "
@@ -118,7 +119,21 @@ async def trial(
             f"{cluster_size=} {batched_send_interval=} {workload=} {compression=} {repetition=}"
         )
 
-        return await workload_func(client)
+        tasks, runtime = await workload_func(client)
+
+        try:
+            batched_send_stats = await client.run(
+                lambda dask_worker: (dask_worker.batched_stream.buffer_sizes_at_send)
+            )
+        except Exception as e:
+            print(
+                f"[bold red]Error getting batched send stats: {e} "
+                f"{cluster_size=} {batched_send_interval=} {workload=} {compression=} {repetition=}"
+            )
+            traceback.print_exc()
+            batched_send_stats = {}
+        assert batched_send_stats is not None
+        return tasks, runtime, batched_send_stats
 
     finally:
         if client:
@@ -128,29 +143,58 @@ async def trial(
             await cluster.close()
 
 
-async def run_trial(writer: csv.DictWriter, vars: dict) -> None:
+async def run_trial(
+    writer: csv.DictWriter, writer_batched_send: csv.DictWriter, vars: dict
+) -> None:
     try:
-        tasks, runtime = await trial(**vars)
+        tasks, runtime, batched_send_stats = await trial(**vars)
     except Exception as e:
         print(f"[bold red]Error during {vars}: {e}")
         traceback.print_exc()
         tasks = runtime = float("nan")
+        batched_send_stats = {}
     else:
-        print(f"[bold blue]{vars}: {runtime} sec, {tasks} tasks")
+        print(
+            f"[bold blue]{vars}: {runtime} sec, {tasks} tasks, "
+            f"{sum(map(len, batched_send_stats.values()))} batched sends"
+        )
 
     writer.writerow({**vars, "runtime": runtime, "tasks": tasks})
 
+    for worker, (sends) in batched_send_stats.items():
+        for i, ((buffer_len, nbytes)) in enumerate(sends):
+            writer_batched_send.writerow(
+                {
+                    **vars,
+                    "worker": worker,
+                    "i": i,
+                    "buffer_len": buffer_len,
+                    "nbytes": nbytes,
+                }
+            )
+
 
 async def run(
-    *, csv_path: str, coiled_parallelism: int, variables: dict[str, List[Any]]
+    *,
+    csv_path: str,
+    batched_send_csv_path: str,
+    coiled_parallelism: int,
+    variables: dict[str, List[Any]],
 ) -> None:
     keys = list(variables)
     combos = [dict(zip(keys, vs)) for vs in itertools.product(*variables.values())]
     random.shuffle(combos)
 
-    with open(csv_path, "w", newline="") as f:
+    with open(csv_path, "w", newline="") as f, open(
+        batched_send_csv_path, "w", newline=""
+    ) as f_batched_send:
         writer = csv.DictWriter(f, keys + ["runtime", "tasks"])
         writer.writeheader()
+
+        writer_batched_send = csv.DictWriter(
+            f_batched_send, keys + ["worker", "i", "buffer_len", "nbytes"]
+        )
+        writer_batched_send.writeheader()
 
         with Progress() as progress:
             task = progress.add_task("Running trials", total=len(combos))
@@ -159,9 +203,10 @@ async def run(
             print = progress.console.print
 
             async def _run_trial(vars: dict):
-                await run_trial(writer, vars)
+                await run_trial(writer, writer_batched_send, vars)
                 progress.advance(task)
                 f.flush()
+                f_batched_send.flush()
 
             await gather_with_concurrency(
                 coiled_parallelism, *[_run_trial(vars) for vars in combos]
@@ -217,6 +262,7 @@ if __name__ == "__main__":
     asyncio.run(
         run(
             csv_path="results.csv",
+            batched_send_csv_path="batched-sends.csv",
             coiled_parallelism=4,
             variables=variables,
         )
