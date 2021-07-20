@@ -102,7 +102,7 @@ async def trial(
             f"[italic]Starting cluster for "
             f"{cluster_size=} {batched_send_interval=} {workload=} {compression=} {repetition=}"
         )
-        cluster = await make_cluster_local(batched_send_interval, compression)
+        cluster = await make_cluster_coiled(batched_send_interval, compression)
         client = await distributed.Client(
             cluster, asynchronous=True, set_as_default=False
         )
