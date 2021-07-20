@@ -67,6 +67,9 @@ async def make_cluster_coiled(
             # https://github.com/dask/distributed/blob/e0593fa/distributed/comm/core.py#L150-L153
             # means we will at least _send_ data uncompressed.
             "DASK_DISTRIBUTED__COMM__COMPRESSION": compression,
+            # Lengthen timeouts to reduce errors
+            "DASK_DISTRIBUTED__COMM__TIMEOUTS__TCP": "60s",
+            "DASK_DISTRIBUTED__COMM__TIMEOUTS__CONNECT": "60s",
         },
     )
 
@@ -223,6 +226,7 @@ if __name__ == "__main__":
             "distributed.comm.retry.count": 5,
             # Give clusters a long time to connect?
             "distributed.comm.timeouts.tcp": "60s",
+            "distributed.comm.timeouts.connect": "60s",
         }
     )
 
