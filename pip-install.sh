@@ -20,5 +20,5 @@ jupyterlab==3.0.16
 ipython==7.25.0
 seaborn==0.11.1
 git+https://github.com/dask/dask.git@main
-git+https://github.com/gjoseph92/distributed.git@09071d316b9b20e4cad170aa3b720f7f7d1b5572
+git+https://github.com/gjoseph92/distributed.git@057262b45fe4a36bda26070c6cdc96a76b82bd28
 EOF
