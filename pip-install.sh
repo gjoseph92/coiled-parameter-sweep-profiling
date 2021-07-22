@@ -19,6 +19,7 @@ pandas==1.3.0
 jupyterlab==3.0.16
 ipython==7.25.0
 seaborn==0.11.1
+statsmodels==0.12.2
 git+https://github.com/dask/dask.git@main
 git+https://github.com/gjoseph92/distributed.git@057262b45fe4a36bda26070c6cdc96a76b82bd28
 EOF
