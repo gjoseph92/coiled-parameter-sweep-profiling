@@ -156,13 +156,15 @@ async def run_trial(
         traceback.print_exc()
         tasks = runtime = float("nan")
         batched_send_stats = {}
+        error = repr(e)
     else:
+        error = None
         print(
             f"[bold blue]{vars}: {runtime} sec, {tasks} tasks, "
             f"{sum(map(len, batched_send_stats.values()))} batched sends"
         )
 
-    writer.writerow({**vars, "runtime": runtime, "tasks": tasks})
+    writer.writerow({**vars, "runtime": runtime, "tasks": tasks, "error": error})
 
     for worker, (sends) in batched_send_stats.items():
         for i, ((buffer_len, nbytes)) in enumerate(sends):
@@ -191,7 +193,7 @@ async def run(
     with open(csv_path, "w", newline="") as f, open(
         batched_send_csv_path, "w", newline=""
     ) as f_batched_send:
-        writer = csv.DictWriter(f, keys + ["runtime", "tasks"])
+        writer = csv.DictWriter(f, keys + ["runtime", "tasks", "error"])
         writer.writeheader()
 
         writer_batched_send = csv.DictWriter(
