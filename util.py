@@ -18,5 +18,5 @@ async def gather_with_concurrency(n: int, *tasks: Awaitable[T]) -> tuple[T, ...]
     return await asyncio.gather(*(sem_task(task) for task in tasks))
 
 
-def graph_size(x) -> int:
-    return len(dask.base.collections_to_dsk([x], optimize_graph=True))
+def graph_size(x, optimize_graph=True) -> int:
+    return len(dask.base.collections_to_dsk([x], optimize_graph=optimize_graph))

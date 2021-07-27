@@ -11,6 +11,7 @@ import traceback
 import coiled
 import distributed
 import dask
+import dask.array as da
 import pandas as pd
 from rich import print
 from rich.progress import Progress
@@ -41,8 +42,26 @@ async def shuffle(client: distributed.Client) -> tuple[int, float]:
     return graph_size(shuffled), elapsed
 
 
+async def blockwise(client: distributed.Client) -> tuple[int, float]:
+    "Embarrasingly-parallel workload with no communication and simple scheduling"
+    n_workers = len(await client.nthreads())
+
+    # Target: 7k tasks per worker
+    arr = da.random.random(n_workers * 1000, chunks=1)
+    for _ in range(6):
+        arr = arr + 1
+
+    start = time.perf_counter()
+    # TODO distributed.wait doesn't work with multiple clients
+    await distributed.client._wait(client.persist(arr, optimize_graph=False))
+    # ^ Use unoptimized graph to prevent blockwise fusion, so there are many embarrasingly parallel tasks
+    elapsed = time.perf_counter() - start
+    return graph_size(arr, optimize_graph=False), elapsed
+
+
 WORKLOADS: dict[str, Callable[[distributed.Client], Awaitable[tuple[int, float]]]] = {
     "shuffle": shuffle,
+    "blockwise": blockwise,
 }
 
 
@@ -254,7 +273,10 @@ if __name__ == "__main__":
             "200ms",
             "500ms",
         ],
-        workload=["shuffle"],
+        workload=[
+            "shuffle",
+            # "blockwise",
+        ],
         compression=[
             "None",
             # "zlib",
