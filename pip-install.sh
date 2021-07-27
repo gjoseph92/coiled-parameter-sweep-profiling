@@ -21,5 +21,5 @@ ipython==7.25.0
 seaborn==0.11.1
 statsmodels==0.12.2
 git+https://github.com/dask/dask.git@main
-git+https://github.com/gjoseph92/distributed.git@057262b45fe4a36bda26070c6cdc96a76b82bd28
+git+https://github.com/gjoseph92/distributed.git@e147a7493c400124e93ef329ec4d874640382fa4
 EOF
