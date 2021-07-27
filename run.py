@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, List, Optional
+from typing import Any, Awaitable, Callable, List, Optional, Union
 import asyncio
 import itertools
 import csv
+from pathlib import Path
 import random
 import time
 import traceback
+import sys
+import signal
 
 import coiled
 import distributed
@@ -17,6 +20,8 @@ from rich import print
 from rich.progress import Progress
 
 from util import gather_with_concurrency, graph_size
+
+Cluster = Union[distributed.deploy.Cluster, coiled.Cluster[coiled.cluster.Async]]
 
 
 async def shuffle(client: distributed.Client) -> tuple[int, float]:
@@ -65,9 +70,7 @@ WORKLOADS: dict[str, Callable[[distributed.Client], Awaitable[tuple[int, float]]
 }
 
 
-async def make_cluster_coiled(
-    batched_send_interval: str, compression: str
-) -> distributed.deploy.Cluster:
+async def make_cluster_coiled(batched_send_interval: str, compression: str) -> Cluster:
     return await coiled.Cluster(
         asynchronous=True,
         n_workers=1,
@@ -93,9 +96,7 @@ async def make_cluster_coiled(
     )
 
 
-async def make_cluster_local(
-    batched_send_interval: str, compression: str
-) -> distributed.deploy.Cluster:
+async def make_cluster_local(batched_send_interval: str, compression: str) -> Cluster:
     # TODO set `batched_send_interval` and `compression` locally.
     # This is just for testing things don't explode.
     return await distributed.LocalCluster(
@@ -106,6 +107,50 @@ async def make_cluster_local(
     )
 
 
+async def dump_cluster_state(cluster: Cluster, timeout=10 * 60) -> bool:
+    """
+    Run the `dump-deadlocked-cluster.py` script as a subprocess.
+
+    We use a subprocess to avoid blocking the event loop here transferring lots of data,
+    or any other bad behavior that might occur talking to this cluster.
+    """
+    assert cluster.name is not None
+    dumps = Path("dumps")
+    dumps.mkdir(exist_ok=True)
+    with open(dumps / f"{cluster.name}-dumplog.txt", "w") as f:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            Path("dump-deadlocked-cluster.py").resolve(),
+            cluster.name,
+            stdout=f,
+            stderr=f,
+            cwd=dumps,
+        )
+        start = time.perf_counter()
+        try:
+            retcode = await asyncio.wait_for(proc.wait(), timeout)
+        except asyncio.TimeoutError:
+            print(
+                f"[red]Timed out dumping cluster state for {cluster.name}. See {f.name} for logs."
+            )
+            try:
+                proc.send_signal(signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            return False
+
+        elapsed = time.perf_counter() - start
+        if retcode == 0:
+            print(
+                f"[green]Successfully dumped cluster state for {cluster.name} in {elapsed:.1f}sec!"
+            )
+            return True
+        print(
+            f"[red]Failed dumping cluster state for {cluster.name} in {elapsed:.1f}sec. See {f.name} for logs."
+        )
+        return False
+
+
 async def trial(
     cluster_size: int,
     batched_send_interval: str,
@@ -114,7 +159,7 @@ async def trial(
     repetition: int,
 ) -> tuple[int, float, dict[str, list[tuple[int, int]]]]:
     client: Optional[distributed.Client] = None
-    cluster: Optional[distributed.deploy.Cluster] = None
+    cluster: Optional[Cluster] = None
     workload_func = WORKLOADS[workload]
     try:
         print(
@@ -141,7 +186,20 @@ async def trial(
             f"{cluster_size=} {batched_send_interval=} {workload=} {compression=} {repetition=}"
         )
 
-        tasks, runtime = await workload_func(client)
+        DEADLOCK_TIMEOUT = 15 * 60
+        try:
+            tasks, runtime = await asyncio.wait_for(
+                workload_func(client), DEADLOCK_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            print(
+                f"[bold red]Suspected deadlock on {cluster.name}. Dumping state...[/] "
+                f"{cluster_size=} {batched_send_interval=} {workload=} {compression=} {repetition=}"
+            )
+            dumped = await dump_cluster_state(cluster, timeout=15 * 60)
+            raise RuntimeError(
+                f"Deadlocked cluster {cluster.name} after {DEADLOCK_TIMEOUT} sec. Successful dump: {dumped}"
+            ) from None
 
         try:
             batched_send_stats = await client.run(
