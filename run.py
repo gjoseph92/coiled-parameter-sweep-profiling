@@ -161,12 +161,13 @@ async def trial(
     client: Optional[distributed.Client] = None
     cluster: Optional[Cluster] = None
     workload_func = WORKLOADS[workload]
+    errors = []
     try:
         print(
             f"[italic]Starting cluster for "
             f"{cluster_size=} {batched_send_interval=} {workload=} {compression=} {repetition=}"
         )
-        cluster = await make_cluster_coiled(batched_send_interval, compression)
+        cluster = await make_cluster_local(batched_send_interval, compression)
         client = await distributed.Client(
             cluster, asynchronous=True, set_as_default=False
         )
@@ -180,7 +181,24 @@ async def trial(
         except asyncio.TimeoutError:
             pass
 
-        await client.wait_for_workers(cluster_size)
+        scaled = False
+        start = time.perf_counter()
+        # Handle TCP timeouts while waiting for scaling
+        # TODO remove this mess when https://github.com/dask/distributed/issues/5099 is fixed
+        while not scaled:
+            try:
+                await client.wait_for_workers(cluster_size)
+            except Exception as e:
+                print(e, f"{cluster_size=} {batched_send_interval=} {workload=} {compression=} {repetition=}")
+                errors.append(e)
+                elapsed = time.perf_counter() - start
+                if len(errors) > 15 or elapsed > 20 * 60:
+                    raise RuntimeError(
+                        f"Giving up scaling after {elapsed / 60:g} min and {len(errors)}.\nErrors: {errors}"
+                    )
+            else:
+                scaled = True
+
         print(
             f"[italic][underline]Here we go[/] - "
             f"{cluster_size=} {batched_send_interval=} {workload=} {compression=} {repetition=}"
@@ -216,6 +234,8 @@ async def trial(
         return tasks, runtime, batched_send_stats
 
     finally:
+        errors.clear()
+        del errors
         if client:
             await client.shutdown()
             await client.close()
